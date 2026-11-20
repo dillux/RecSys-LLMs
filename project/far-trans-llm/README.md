@@ -6,10 +6,11 @@ baselines and evaluation unchanged. These are optional starting points: use the
 approach relevant to your research question, not necessarily both. Identify your
 own change and contribution; improvement over the baselines is not required.
 
-- **Encoder:** paraphrase each asset's supplied attributes, combine original and
-  generated text as separate TF-IDF views, then match assets to a user's past Buy
-  history. Compare `llmrec_encoder` with `original_text_cbf`. Inspired by LLM-Rec's
-  basic `p_para` prompt; this uses TF-IDF instead of its text encoder/trained MLP.
+- **Encoder:** ask the LLM for strict, source-grounded structured terms for the six
+  supplied asset fields, namespace those terms by field, and combine that view with
+  raw metadata TF-IDF before matching a user's past Buy history. The new method is
+  `structured_attribute_encoder`; `original_text_cbf` is its matched raw-metadata
+  control. Unsupported terms are rejected and can use source-only fallbacks.
 - **Ranker:** show the LLM past Buy counts, dated recent purchases, the explicit
   most recent Buy, and fixed CBF candidates; ask it to return ten original ISINs.
   Compare `llmrank` with `candidate_order_first10` on identical candidates.
@@ -41,6 +42,9 @@ NVIDIA GeForce RTX 5070 Ti **Laptop GPU**, CUDA bfloat16. CUDA is not required b
 API; CPU uses float32 and may be much slower. The pilot required at least 5 GiB free
 CUDA memory before starting; that is a local safety gate, **not a promise that every
 model/workload fits in 5 GiB**. Do not use a CPU fallback for a time-bounded GPU pilot.
+Apple MPS is not part of the official runtime device choices; this project does not
+silently switch to MPS or change scoring logic. Any MPS experiment must be separately
+documented.
 
 A cached model ID or local snapshot path is accepted. Loading defaults to
 `local_files_only=True`, `trust_remote_code=False`; no teacher API or API credentials
@@ -88,8 +92,21 @@ not the shell's working directory; no `--starter-dir` is needed. An explicit
 `--starter-dir ../far-trans` also works when running from this directory.
 
 For prompt-only inspection, add `--prepare-only` to either command; no model is
-loaded or downloaded, and no measured result is produced. For a three-user check,
-use `--max-users 3` and a fresh output directory. For a bounded CUDA pilot use
+loaded or downloaded, and no measured result is produced. Encoder `--max-users 3`
+still generates for the entire eligible asset universe and is not a bounded model
+pilot. For a bounded diagnostic, create a JSON object with one to three allowlisted
+asset rows and run:
+
+```bash
+python structured_smoke.py \
+  --assets-json /path/to/one_to_three_assets.json \
+  --output-dir outputs/structured_smoke \
+  --model Qwen/Qwen3-1.7B \
+  --revision 70d244cc86ccca08cf5af4e1e306ecf908b1ad5e \
+  --device cpu
+```
+
+This writes a diagnostic-only result and never produces evaluation metrics. For a bounded CUDA pilot use
 `--device cuda` and GNU `timeout --signal=TERM --kill-after=2s 120s` (ranker) or
 `300s` (encoder) before `python`. Timeout exit 124 is an incomplete experiment,
 not a successful result; these pilot time limits do not guarantee a complete
@@ -111,8 +128,10 @@ zero in the all-user macro mean; its nonempty-truth mean is reported separately.
 Do not change users per method, remove assets to finish generation, or evaluate
 partially generated text as a completed encoder benchmark.
 
-Only as-of source metadata/history/profile information enters prompts; truth is
-kept separate. Missing values stay unknown. No future news or external lookup is
+Only as-of source metadata/history/profile information enters prompts. The structured
+Encoder prompt uses only `name`, `category`, `subcategory`, `sector`, `industry`, and
+`market`; it never sends ISIN, transactions, labels, or prices. Truth is kept
+separate. Missing values stay unknown. No future news or external lookup is
 supplied, but real public asset names may activate a model's pretrained knowledge.
 Generated text is **not automatically factually validated**, and these experiments
 are not investment advice.
@@ -136,8 +155,8 @@ caches, logs, raw customer IDs, or user-level results. Keep generated files in t
 ignored `outputs/` directory; do not commit prompts or user-level outputs.
 
 Default invalid policy is `error`; explicit `--on-invalid fallback` keeps the
-original candidate order for an invalid ranker response and original source text
-for an invalid encoder paraphrase. These are fallback-inclusive results, **not bare
+original candidate order for an invalid ranker response and source-only structured
+terms for an invalid structured Encoder response. These are fallback-inclusive results, **not bare
 LLM performance**. Report invalid/fallback and valid-only coverage separately.
 
 A timed-out encoder retains prompts and cache but has no completed metrics.

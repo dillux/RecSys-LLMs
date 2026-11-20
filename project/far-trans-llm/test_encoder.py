@@ -7,8 +7,11 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from encoder import (tfidf, combine_views, history_scores, source_text,
-                     paraphrase_prompt, generate_views, predict)
+from encoder import (tfidf, combine_views, combine_structured_view,
+                     history_scores, source_text, paraphrase_prompt,
+                     structured_prompt, parse_structured_attributes,
+                     fallback_structured_attributes, structured_text,
+                     generate_views, generate_structured_views, predict)
 
 
 class EncoderTests(unittest.TestCase):
@@ -82,6 +85,66 @@ class EncoderTests(unittest.TestCase):
         self.assertEqual(json.loads(text)['industry'], 'unknown')
         self.assertIn('<=40 words', paraphrase_prompt(text))
         self.assertEqual(text, source_text({'sector': 'Energy', 'assetName': 'Alpha'}))
+
+    def test_structured_json_is_strict_and_source_grounded(self):
+        source = source_text({'assetName': 'Alpha Growth', 'assetCategory': 'Stock',
+                              'assetSubCategory': 'Common', 'sector': 'Energy',
+                              'industry': 'Oil', 'marketID': 'EU'})
+        valid = json.dumps({field: [value] for field, value in {
+            'name': 'alpha', 'category': 'stock', 'subcategory': 'common',
+            'sector': 'energy', 'industry': 'oil', 'market': 'eu'}.items()})
+        parsed = parse_structured_attributes(valid, source)
+        self.assertEqual(parsed['sector'], ['energy'])
+        with self.assertRaises(ValueError):
+            parse_structured_attributes(json.dumps({'sector': ['energy']}), source)
+        invalid = json.loads(valid)
+        invalid['sector'] = ['financials']
+        with self.assertRaises(ValueError):
+            parse_structured_attributes(json.dumps(invalid), source)
+
+    def test_structured_unknown_and_prompt_leakage(self):
+        source = source_text({'assetName': 'Alpha', 'assetCategory': 'Stock',
+                              'assetSubCategory': '', 'sector': 'Not_Available',
+                              'industry': '', 'marketID': 'EU'})
+        fallback = fallback_structured_attributes(source)
+        self.assertEqual(fallback['sector'], ['unknown'])
+        self.assertEqual(fallback['industry'], ['unknown'])
+        prompt = structured_prompt(source)
+        self.assertNotIn('ISIN', prompt)
+        self.assertNotIn('2099', prompt)
+        self.assertIn('exactly these six keys', prompt)
+
+    def test_structured_fallback_is_logged_and_deterministic(self):
+        class Fake:
+            def __init__(self):
+                self.calls = []
+            def generate(self, prompt, max_new_tokens):
+                self.calls.append((prompt, max_new_tokens))
+                return {'text': '{}'}
+        source = source_text({'assetName': 'Alpha', 'assetCategory': 'Stock'})
+        fake = Fake()
+        first, failures = generate_structured_views({'A': source}, fake, 'fallback')
+        second, _ = generate_structured_views({'A': source}, Fake(), 'fallback')
+        self.assertEqual(first, second)
+        self.assertEqual(len(failures), 1)
+        self.assertTrue(failures[0]['fallback'])
+        self.assertEqual(fake.calls[0][1], 160)
+
+    def test_structured_view_changes_scores_and_predictions(self):
+        original = tfidf({'A': 'shared', 'B': 'shared'})
+        structured = tfidf({'A': structured_text({'name': ['alpha'], 'category': ['stock'],
+                                                    'subcategory': ['unknown'], 'sector': ['energy'],
+                                                    'industry': ['oil'], 'market': ['eu']}),
+                            'B': structured_text({'name': ['beta'], 'category': ['stock'],
+                                                    'subcategory': ['unknown'], 'sector': ['finance'],
+                                                    'industry': ['bank'], 'market': ['us']})})
+        combined = combine_structured_view(original, structured)
+        self.assertGreater(history_scores({'A': 1}, combined)['A'],
+                           history_scores({'A': 1}, combined)['B'])
+        contexts = {'u': {'eligible_asset_ids': ['A', 'B']}}
+        predictions = predict(contexts, {'u': {'A': 1}}, original, combined,
+                              {'A': 0, 'B': 0}, method_name='structured_attribute_encoder')
+        self.assertEqual(predictions['u']['structured_attribute_encoder'][0], 'A')
 
     def test_generation_once_per_asset_and_invalid(self):
         class Fake:

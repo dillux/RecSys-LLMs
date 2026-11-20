@@ -18,11 +18,14 @@ class LocalGenerator:
         self.device = ('cuda' if torch.cuda.is_available() else 'cpu') if device == 'auto' else device
         if self.device == 'cuda' and not torch.cuda.is_available():
             raise ValueError('CUDA requested but unavailable')
+        if self.device == 'mps' and not torch.backends.mps.is_available():
+            raise ValueError('MPS requested but unavailable')
         kwargs = {'local_files_only': not allow_download, 'trust_remote_code': False}
         if revision:
             kwargs['revision'] = revision
         self.tokenizer = AutoTokenizer.from_pretrained(model, **kwargs)
-        dtype = torch.bfloat16 if self.device == 'cuda' else torch.float32
+        dtype = torch.bfloat16 if self.device == 'cuda' else (
+            torch.float16 if self.device == 'mps' else torch.float32)
         self.model = AutoModelForCausalLM.from_pretrained(model, torch_dtype=dtype, **kwargs)
         self.model.to(self.device).eval()
         import transformers
